@@ -95,9 +95,10 @@
   let lastUiLog = "";
   let uiStyle = null;
   let lineCount = 0;
+  let uiHidden = false;
 
   function bringToFront() {
-    if (!uiRoot) return;
+    if (!uiRoot || uiHidden) return;
     const parent = document.documentElement || document.body;
     if (!parent) return;
     if (uiRoot.parentNode !== parent || parent.lastChild !== uiRoot) {
@@ -111,6 +112,7 @@
   }
 
   function ensureUI() {
+    if (uiHidden) return;
     const host = document.body || document.documentElement;
     if (!host) {
       document.addEventListener("DOMContentLoaded", ensureUI, { once: true });
@@ -131,7 +133,11 @@
         "#filemerge-term-bar .dot.y{background:#ffbd2e}" +
         "#filemerge-term-bar .dot.g{background:#27c93f}" +
         "#filemerge-term-bar .title{flex:1;text-align:center;color:#6f6;letter-spacing:.04em}" +
-        "#filemerge-log{flex:1;min-height:280px;max-height:70vh;overflow:auto;padding:14px 16px 8px;font-size:13px;line-height:1.55;color:#33ff66;white-space:pre-wrap;word-break:break-all;background:#0c0c0c}" +
+        "#filemerge-log{flex:1;min-height:280px;max-height:70vh;overflow:auto;padding:14px 16px 8px;font-size:13px;line-height:1.55;color:#33ff66;white-space:pre-wrap;word-break:break-all;background:#0c0c0c;scrollbar-width:thin;scrollbar-color:#1f3d1f #0c0c0c}" +
+        "#filemerge-log::-webkit-scrollbar{width:8px}" +
+        "#filemerge-log::-webkit-scrollbar-track{background:#0c0c0c;border-radius:4px}" +
+        "#filemerge-log::-webkit-scrollbar-thumb{background:#1f3d1f;border-radius:4px}" +
+        "#filemerge-log::-webkit-scrollbar-thumb:hover{background:#2a5a2a}" +
         "#filemerge-log .line{margin:0 0 2px}" +
         "#filemerge-log .line.err{color:#ff6b6b}" +
         "#filemerge-log .line.info{color:#7dd3fc}" +
@@ -165,6 +171,7 @@
   }
 
   function appendLog(line, kind) {
+    if (uiHidden) return;
     ensureUI();
     bringToFront();
     if (!uiLog) {
@@ -187,7 +194,8 @@
   }
 
   function hideUISoon() {
-    if (!uiRoot) return;
+    if (!uiRoot || uiHidden) return;
+    uiHidden = true;
     setTimeout(function () {
       if (!uiRoot) return;
       uiRoot.classList.add("filemerge-hide");
@@ -197,7 +205,18 @@
         uiLog = null;
         uiCursor = null;
       }, 400);
-    }, 900);
+    }, 600);
+  }
+
+  function allTargetsDone() {
+    let allDone = true;
+    targetStates.forEach((state) => {
+      if (state.progress.phase !== "done" && state.progress.phase !== "idle") {
+        allDone = false;
+      }
+    });
+    if (targetStates.size === 0) allDone = false;
+    return allDone;
   }
 
   function formatBytes(n) {
@@ -260,8 +279,10 @@
       mergeTotalText: formatBytes(s.mergeTotal)
     };
 
-    ensureUI();
-    bringToFront();
+    if (!uiHidden) {
+      ensureUI();
+      bringToFront();
+    }
 
     let logLine = "";
     let kind = "";
@@ -301,6 +322,10 @@
     try {
       window.dispatchEvent(new CustomEvent("filemerge-progress", { detail: detail }));
     } catch (_) {}
+
+    if (s.phase === "done" && allTargetsDone()) {
+      hideUISoon();
+    }
   }
 
   async function loadManifest(state) {
@@ -584,9 +609,11 @@
       return await state.mergePromise;
     } catch (error) {
       state.mergePromise = null;
+      state.progress.phase = "done";
       ensureUI();
       bringToFront();
       appendLog("error " + (error && error.message ? error.message : error), "err");
+      if (allTargetsDone()) hideUISoon();
       throw error;
     }
   }
@@ -655,6 +682,7 @@
       if (!Array.isArray(next)) throw new Error("setTargets expects array");
       targets = next.map((t) => Object.assign({}, DEFAULT_TARGET, t));
       targetStates.clear();
+      uiHidden = false;
     },
 
     getConfig: function () {
@@ -666,6 +694,7 @@
     setConfig: function (next) {
       targets = normalizeConfig(next || {});
       targetStates.clear();
+      uiHidden = false;
     },
 
     getProgress: function (targetUrl) {
@@ -683,14 +712,11 @@
   };
 
   const keepTopTimer = setInterval(function () {
-    if (!uiRoot || !document.getElementById("filemerge-overlay")) return;
-    let anyRunning = false;
-    targetStates.forEach((state) => {
-      if (state.progress.phase !== "idle" && state.progress.phase !== "done") {
-        anyRunning = true;
-      }
-    });
-    if (!anyRunning) {
+    if (uiHidden || !uiRoot || !document.getElementById("filemerge-overlay")) {
+      clearInterval(keepTopTimer);
+      return;
+    }
+    if (allTargetsDone()) {
       clearInterval(keepTopTimer);
       hideUISoon();
       return;
@@ -712,6 +738,7 @@
     )
   ).then(function () {
     appendLog("all targets done", "ok");
+    hideUISoon();
   });
 
   console.log("[FileMerge] ready (" + targets.length + " target(s))");
