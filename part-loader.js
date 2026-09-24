@@ -289,7 +289,7 @@
 
     if (s.phase === "download") {
       logLine =
-        "recv " +
+        "file-part " +
         (s.partIndex + 1) +
         "/" +
         s.partCount +
