@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,height=device-height,initial-scale=1">
-  <title>Return to Castle Wolfenstein</title>
+  <title>Return to Castle Wolfenstein - wasm</title>
   <style>
     html, body {
       height: 100%;
@@ -112,7 +112,7 @@
   <textarea id="output" readonly></textarea>
   <canvas id="canvas" oncontextmenu="event.preventDefault();" tabindex="-1"></canvas>
   <a id="exportFile" hidden></a>
- <script src="./part-loader.js"></script>
+  <script src="./part-loader.js"></script>
   <script>
     const statusContainerElement = document.getElementById("statusContainer");
     const statusElement          = document.getElementById("status");
@@ -125,10 +125,6 @@
     let pakDict         = {};
     let _isDemoMode     = false;
     let useTouchOverlay = false;
-    let hasRedirectedExit = false;
-
-    const EXIT_REDIRECT_URL =
-      "https://www.lemon-web.net/applications/lemon-web-games#wolfenstein3dreturntocastlewolfenstein";
 
     const PAK_SOURCES = [
       { name: "pak0.pk3",    url: "./rtcw/pak0.pk3" },
@@ -152,24 +148,12 @@
       return num + " bytes";
     }
 
-    function redirectOnExit() {
-      if (hasRedirectedExit) return;
-      hasRedirectedExit = true;
-      window.location.href = EXIT_REDIRECT_URL;
-    }
-
     function _printText(text) {
       outputElement.value += text + "\n";
       if (outputElement.value.length > 2097152) {
         outputElement.value = outputElement.value.slice(-1048576);
       }
       outputElement.scrollTop = outputElement.scrollHeight;
-      if (
-        text.indexOf("Client Shutdown (Client quit)") !== -1 ||
-        text.indexOf("SDL audio shut down.") !== -1
-      ) {
-        setTimeout(redirectOnExit, 1000);
-      }
     }
 
     async function fetchWithCache(url) {
@@ -456,10 +440,6 @@
           document.removeEventListener("keydown", Module._lockPointerOnKey);
           Module._canLockPointer = true;
         }
-      },
-
-      onExit: function (status) {
-        redirectOnExit();
       },
 
       arguments: window.location.search.length > 1
