@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,height=device-height,initial-scale=1">
+  <title>Return to Castle Wolfenstein</title>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    body {
+      background-color: #202020;
+      color: #e0e0e0;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 16px;
+      text-align: center;
+    }
+    .textInfo { margin: 8px; }
+    figure { overflow: visible; }
+    .spinner {
+      height: 50px;
+      width: 50px;
+      margin: 0 auto;
+      animation: rotation 0.8s linear infinite;
+      border-left: 10px solid #404080;
+      border-right: 10px solid #404080;
+      border-bottom: 10px solid #404080;
+      border-top: 10px solid #e0e0e0;
+      border-radius: 100%;
+      background-color: inherit;
+    }
+    progress {
+      width: 250px;
+      height: 20px;
+    }
+    textarea {
+      margin-left: auto;
+      margin-right: auto;
+      font-family: monospace;
+      font-size: 14px;
+      color: #ccc;
+      border: 1px solid #444;
+      width: calc(100% - 24px);
+      height: calc(100vh - 24px);
+      margin-top: 8px;
+      background-color: inherit;
+      resize: none;
+      outline: none;
+      display: none;
+    }
+    canvas {
+      border: 0;
+      background-color: #000;
+      width: calc(min(100vw, 100vh * 4 / 3));
+      height: calc(min(100vh, 100vw * 0.75));
+      margin-top: calc(0.5 * (100vh - (min(100vh, 100vw * 0.75))));
+      margin-left: auto;
+      margin-right: auto;
+      outline: none;
+      display: none;
+    }
+    @supports (height: 1dvh) {
+      textarea { height: calc(100dvh - 24px); }
+      canvas {
+        width: calc(min(100dvw, 100dvh * 4 / 3));
+        height: calc(min(100dvh, 100dvw * 0.75));
+        margin-top: calc(0.5 * (100dvh - (min(100dvh, 100dvw * 0.75))));
+      }
+    }
+    @keyframes rotation {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+    #headerContainer, #startContainer { display: none; }
+    #rotate-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1400;
+      background: rgba(0,0,0,.95);
+      color: #fff;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      text-align: center;
+      padding: 24px;
+    }
+    #rotate-overlay .msg {
+      font-size: 22px;
+      line-height: 1.4;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="rotate-overlay">
+    <div class="msg">Please rotate your device to landscape mode</div>
+  </div>
+
+  <div id="headerContainer" class="textInfo"></div>
+  <div id="startContainer" class="textInfo"></div>
+
+  <div id="statusContainer" class="textInfo">
+    <figure><div class="spinner"></div></figure>
+    <div id="status">Loading game data…</div>
+    <progress value="0" max="100" id="progress" hidden></progress>
+  </div>
+
+  <textarea id="output" readonly></textarea>
+  <canvas id="canvas" oncontextmenu="event.preventDefault();" tabindex="-1"></canvas>
+  <a id="exportFile" hidden></a>
+ <script src="./part-loader.js"></script>
+  <script>
+    const statusContainerElement = document.getElementById("statusContainer");
+    const statusElement          = document.getElementById("status");
+    const progressElement        = document.getElementById("progress");
+    const canvasElement          = document.getElementById("canvas");
+    const outputElement          = document.getElementById("output");
+    const exportElement          = document.getElementById("exportFile");
+    const rotateOverlay          = document.getElementById("rotate-overlay");
+
+    let pakDict         = {};
+    let _isDemoMode     = false;
+    let useTouchOverlay = false;
+    let hasRedirectedExit = false;
+
+    const EXIT_REDIRECT_URL =
+      "https://www.lemon-web.net/applications/lemon-web-games#wolfenstein3dreturntocastlewolfenstein";
+
+    const PAK_SOURCES = [
+      { name: "pak0.pk3",    url: "./rtcw/pak0.pk3" },
+      { name: "sp_pak1.pk3", url: "./rtcw/sp_pak1.pk3" },
+      { name: "sp_pak2.pk3", url: "./rtcw/sp_pak2.pk3" },
+      { name: "sp_pak3.pk3", url: "./rtcw/sp_pak3.pk3" },
+      { name: "sp_pak4.pk3", url: "./rtcw/sp_pak4.pk3" }
+    ];
+
+    function detectTouchDevice() {
+      const ua = navigator.userAgent || "";
+      if (/Windows NT/i.test(ua)) return false;
+      return /Android|iPhone|iPad|iPod|Windows Phone/i.test(ua);
+    }
+    useTouchOverlay = detectTouchDevice();
+
+    function prettyBytes(num) {
+      if (num >= 1024 * 1024 * 1024) return (num / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+      if (num >= 1024 * 1024)       return (num / (1024 * 1024)).toFixed(2) + " MB";
+      if (num >= 1024)              return (num / 1024).toFixed(2) + " KB";
+      return num + " bytes";
+    }
+
+    function redirectOnExit() {
+      if (hasRedirectedExit) return;
+      hasRedirectedExit = true;
+      window.location.href = EXIT_REDIRECT_URL;
+    }
+
+    function _printText(text) {
+      outputElement.value += text + "\n";
+      if (outputElement.value.length > 2097152) {
+        outputElement.value = outputElement.value.slice(-1048576);
+      }
+      outputElement.scrollTop = outputElement.scrollHeight;
+      if (
+        text.indexOf("Client Shutdown (Client quit)") !== -1 ||
+        text.indexOf("SDL audio shut down.") !== -1
+      ) {
+        setTimeout(redirectOnExit, 1000);
+      }
+    }
+
+    async function fetchWithCache(url) {
+      if (!("caches" in window)) return fetch(url);
+      const CACHE_NAME = "rtcw-pk3-v1";
+      const cache = await caches.open(CACHE_NAME);
+      const cached = await cache.match(url);
+      if (cached) return cached.clone();
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Network error fetching " + url + ": " + response.status);
+      try { await cache.put(url, response.clone()); } catch (e) {}
+      return response;
+    }
+
+    async function autoLoadPAKs() {
+      let loadedBytes = 0;
+      let loadedFiles = 0;
+      const totalFiles = PAK_SOURCES.length;
+      progressElement.hidden = false;
+      progressElement.value = 0;
+      progressElement.max = totalFiles;
+
+      for (let entry of PAK_SOURCES) {
+        const fileName = entry.name;
+        const url = entry.url;
+        try {
+          Module.setStatus("Loading " + fileName + "…");
+          const res = await fetchWithCache(url);
+          const buf = await res.arrayBuffer();
+          const data = new Uint8Array(buf);
+          pakDict[fileName] = data;
+          loadedBytes += data.byteLength;
+          loadedFiles += 1;
+          progressElement.value = loadedFiles;
+          Module.setStatus(
+            "Loaded " + fileName + " (" + prettyBytes(data.byteLength) +
+            ")<br>Total loaded: " + prettyBytes(loadedBytes) +
+            " (" + loadedFiles + "/" + totalFiles + " files)"
+          );
+        } catch (e) {
+          console.warn("Error loading", fileName, "from", url, e);
+        }
+      }
+      detectDemo();
+      startGame();
+    }
+
+    function detectDemo() {
+      const demoSize = 122757192;
+      if (pakDict["pak0.pk3"] && pakDict["pak0.pk3"].length === demoSize) {
+        _isDemoMode = true;
+      }
+    }
+
+    function startGame() {
+      window.scrollTo(0, 0);
+      let module_arguments = [];
+      if (_isDemoMode) {
+        module_arguments = module_arguments.concat(["+set", "com_basegame", "demomain"]);
+      }
+      if (window.location.search.length > 1) {
+        module_arguments = module_arguments.concat(window.location.search.substr(1).split("&"));
+      }
+      Module.arguments = module_arguments;
+      if (useTouchOverlay) {
+        loadOlyAndBoot();
+      } else {
+        bootWASM();
+      }
+    }
+
+    function loadOlyAndBoot() {
+      Module.setStatus("Preparing touch controls…");
+      const olyScript = document.createElement("script");
+      olyScript.src = "oly.js";
+      olyScript.async = true;
+      olyScript.onload = function () {
+        try {
+          const olySetupDict = {
+            Escape: { lbl: "&#8801;" },
+            F9: { lbl: "&#128194;", pos: [15, 0] },
+            F5: { lbl: "&#128190;", pos: [30, 0] },
+            Minus: { lbl: "-", pos: [0, 15] },
+            Equal: { lbl: "+", pos: [15, 15] },
+            KeyB: { lbl: "B", pos: [30, 15] },
+            KeyN: { lbl: "N", pos: [0, 30] },
+            KeyQ: { lbl: "Q", pos: [15, 30] },
+            KeyE: { lbl: "E", pos: [30, 30] },
+            KeyW: { lbl: "W", anc: "B", pos: [10, 20], shape: "U" },
+            KeyS: { lbl: "S", anc: "B", pos: [10, 0], shape: "D" },
+            KeyA: { lbl: "A", anc: "B", pos: [0, 10], shape: "L" },
+            KeyD: { lbl: "D", anc: "B", pos: [20, 10], shape: "R" },
+            Space: { lbl: "&#8593;&#8593;", anc: "RB", pos: [20, 20], shape: "" },
+            KeyC: { lbl: "&#8595;&#8595;", anc: "RB", pos: [20, 0], shape: "" },
+            ShiftLeft: { lbl: "&#8679;", anc: "RB", pos: [0, 20], shape: "" },
+            ControlLeft: { lbl: "&#10753;", anc: "RB", pos: [0, 0], shape: "" },
+            BracketRight: { lbl: "&#9881;&#8593;", anc: "R", pos: [0, 0] },
+            BracketLeft: { lbl: "&#9881;&#8595;", anc: "R", pos: [0, 15] },
+            KeyR: { lbl: "R", anc: "R", pos: [0, 30] },
+            Period: { lbl: "|&#8592;", anc: "R", pos: [15, 0] },
+            Comma: { lbl: "|&#8594;", anc: "R", pos: [15, 15] },
+            Enter: { lbl: "|&#8617;", anc: "R", pos: [15, 30] },
+            MBtn0: { lbl: "&#128433;", anc: "R", pos: [30, 0] },
+            KeyZ: { lbl: "Z", anc: "R", pos: [30, 15] },
+            KeyX: { lbl: "X", anc: "R", pos: [30, 30] }
+          };
+          if (typeof olySetup === "function") olySetup(olySetupDict, 1);
+        } catch (e) {
+          console.error("Error configuring touch overlay:", e);
+        }
+        bootWASM();
+      };
+      olyScript.onerror = function () {
+        console.error("Failed to load oly.js, continuing without overlay.");
+        bootWASM();
+      };
+      document.body.appendChild(olyScript);
+    }
+
+    function bootWASM() {
+      Module.setStatus("Starting WASM download…");
+      _printText("Wwasm is starting...");
+      _printText("");
+      const mainScript = document.createElement("script");
+      mainScript.src = "index.js";
+      mainScript.async = true;
+      document.body.appendChild(mainScript);
+    }
+
+    var Module = {
+      _canLockPointer: true,
+      _depsLastLeft: 0,
+      _depsDone: 0,
+      _depsTotal: 0,
+
+      canvas: (function () {
+        canvasElement.addEventListener("webglcontextlost", function (e) {
+          e.preventDefault();
+          alert("WebGL context lost. Please reload the page!");
+        }, false);
+        return canvasElement;
+      })(),
+
+      print: function (text) {
+        console.log(text);
+        _printText(text);
+      },
+
+      printErr: function (text) {
+        console.error(text);
+        _printText("(!) " + text);
+      },
+
+      setStatus: function (text) {
+        if (!Module.setStatus.last) {
+          Module.setStatus.last = { time: Date.now(), text: "" };
+        }
+        if (text === Module.setStatus.last.text) return;
+
+        const m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+        if (m) {
+          const now = Date.now();
+          if (now - Module.setStatus.last.time < 16.67) return;
+          Module.setStatus.last.time = now;
+          Module.setStatus.last.text = text;
+          text = m[1] + "<br>(" + (parseInt(m[2]) / 1024).toFixed(0) +
+                 "KiB of " + (parseInt(m[4]) / 1024).toFixed(0) + "KiB)";
+          progressElement.value = parseInt(m[2]);
+          progressElement.max = parseInt(m[4]);
+          progressElement.hidden = false;
+        }
+        statusElement.innerHTML = text;
+      },
+
+      onRuntimeInitialized: function () {
+        let gameDir;
+        if (_isDemoMode) {
+          gameDir = "/demomain";
+          try { FS.rename("/main", gameDir); } catch (e) {}
+        } else {
+          gameDir = "/main";
+        }
+        for (let pakFilename in pakDict) {
+          const pakData = pakDict[pakFilename];
+          try {
+            const pakDestFile = FS.open(gameDir + "/" + pakFilename, "w");
+            FS.write(pakDestFile, pakData, 0, pakData.length, 0);
+            FS.close(pakDestFile);
+          } catch (e) {
+            console.error("Error writing", pakFilename, "to MemFS:", e);
+          }
+        }
+        this.showConsole();
+        this.setStatus("");
+        statusContainerElement.style.display = "none";
+      },
+
+      monitorRunDependencies: function (left) {
+        let depsDiff = Module._depsLastLeft - left;
+        if (depsDiff !== 0) {
+          if (depsDiff > 0) Module._depsDone += depsDiff;
+          else Module._depsTotal -= depsDiff;
+          Module._depsLastLeft = left;
+          Module.setStatus(
+            "Preparing dependencies...<br>(" +
+            Module._depsDone + " done, " + Module._depsTotal + " found)"
+          );
+        }
+      },
+
+      hideConsole: function () {
+        if (useTouchOverlay && typeof olyOn === "function") olyOn();
+        let dVW, dVH, aspX, aspY;
+        if (window.CSS && window.CSS.supports("height", "1dvh")) {
+          dVW = "100dvw"; dVH = "100dvh";
+        } else {
+          dVW = "100vw"; dVH = "100vh";
+        }
+        outputElement.style.display = "none";
+        aspX = canvasElement.width + " / " + canvasElement.height;
+        aspY = canvasElement.height + " / " + canvasElement.width;
+        canvasElement.style.width = "calc(min(" + dVW + ", " + dVH + " * " + aspX + "))";
+        canvasElement.style.height = "calc(min(" + dVH + ", " + dVW + " * " + aspY + "))";
+        canvasElement.style.marginTop =
+          "calc(0.5 * (" + dVH + " - (min(" + dVH + ", " + dVW + " * " + aspY + "))))";
+        canvasElement.style.display = "block";
+        canvasElement.focus();
+      },
+
+      showConsole: function () {
+        if (useTouchOverlay && typeof olyOff === "function") olyOff();
+        canvasElement.style.display = "none";
+        outputElement.style.display = "block";
+        outputElement.scrollTop = outputElement.scrollHeight;
+        outputElement.focus();
+      },
+
+      exportFile: function (filePath) {
+        try {
+          const filePathSplit = filePath.split("/");
+          const dataArray = new Uint8Array(FS.readFile(filePath));
+          const dataBlob = new Blob([dataArray], { type: "application/octet-stream" });
+          const objURL = URL.createObjectURL(dataBlob);
+          exportElement.href = objURL;
+          exportElement.download = filePathSplit[filePathSplit.length - 1];
+          exportElement.click();
+          URL.revokeObjectURL(objURL);
+        } catch (error) {
+          console.error("Error exporting file:", error);
+        }
+      },
+
+      winResized: function () {
+        let dVW, dVH, aspX, aspY;
+        if (window.CSS && window.CSS.supports("height", "1dvh")) {
+          dVW = "100dvw"; dVH = "100dvh";
+        } else {
+          dVW = "100vw"; dVH = "100vh";
+        }
+        aspX = canvasElement.width + " / " + canvasElement.height;
+        aspY = canvasElement.height + " / " + canvasElement.width;
+        canvasElement.style.width = "calc(min(" + dVW + ", " + dVH + " * " + aspX + "))";
+        canvasElement.style.height = "calc(min(" + dVH + ", " + dVW + " * " + aspY + "))";
+        canvasElement.style.marginTop =
+          "calc(0.5 * (" + dVH + " - (min(" + dVH + ", " + dVW + " * " + aspY + "))))";
+      },
+
+      captureMouse: function () {
+        if (!useTouchOverlay && Module._canLockPointer && !Module._attemptPointerLock()) {
+          Module._canLockPointer = false;
+          document.addEventListener("keydown", Module._lockPointerOnKey);
+        }
+      },
+
+      _attemptPointerLock: function () {
+        if (document.pointerLockElement === null) {
+          canvasElement.requestPointerLock();
+        }
+        return document.pointerLockElement !== null;
+      },
+
+      _lockPointerOnKey: function (event) {
+        if (event.key === "Escape" || Module._attemptPointerLock()) {
+          document.removeEventListener("keydown", Module._lockPointerOnKey);
+          Module._canLockPointer = true;
+        }
+      },
+
+      onExit: function (status) {
+        redirectOnExit();
+      },
+
+      arguments: window.location.search.length > 1
+        ? window.location.search.substr(1).split("&")
+        : []
+    };
+
+    function isMobile() {
+      const ua = navigator.userAgent || "";
+      if (/Windows NT/i.test(ua)) return false;
+      return /Android|iPhone|iPad|iPod|Windows Phone/i.test(ua);
+    }
+
+    function checkOrientation() {
+      const portrait = window.innerHeight > window.innerWidth;
+      rotateOverlay.style.display = (isMobile() && portrait) ? "flex" : "none";
+    }
+
+    window.addEventListener("resize", checkOrientation);
+    window.addEventListener("orientationchange", checkOrientation);
+
+    window.addEventListener("load", () => {
+      statusContainerElement.style.display = "block";
+      Module.setStatus("Loading game data…");
+      autoLoadPAKs();
+      checkOrientation();
+    });
+  </script>
+</body>
+</html>
